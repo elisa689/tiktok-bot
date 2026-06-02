@@ -50,44 +50,62 @@ def scrape_tiktok(url: str) -> dict:
     ydl_opts = {
         "quiet": True,
         "skip_download": True,
-        "writesubtitles": False,
-        "writeautomaticsub": False,
-        "subtitleslangs": ["en"],
-        "extractor_args": {"tiktok": {"app_version": []}},
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        "subtitleslangs": ["en", "en-US"],
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
 
-    username    = info.get("uploader_id") or info.get("uploader") or ""
-    views       = info.get("view_count") or 0
-    likes       = info.get("like_count") or 0
-    comments    = info.get("comment_count") or 0
-    shares      = info.get("repost_count") or 0
-    title       = info.get("title") or info.get("description") or username
+    # Prefer the @handle (uploader_id) over the numeric unique_id
+    username = (
+        info.get("uploader_id")
+        or info.get("channel_id")
+        or info.get("uploader")
+        or ""
+    )
+    # Strip leading @ if present, then re-add for consistency
+    username = "@" + username.lstrip("@")
 
-    engagement  = f"Likes: {likes:,}  Comments: {comments:,}  Shares: {shares:,}"
+    views    = info.get("view_count") or 0
+    likes    = info.get("like_count") or 0
+    comments = info.get("comment_count") or 0
+    shares   = info.get("repost_count") or 0
+    title    = info.get("title") or info.get("description") or username
 
-    # Transcript: pull from automatic captions if available
+    engagement = f"Likes: {likes:,}  Comments: {comments:,}  Shares: {shares:,}"
+
+    # Transcript: try all caption tracks (subtitles first, then auto)
     transcript = ""
-    auto_captions = info.get("automatic_captions") or {}
-    subs = info.get("subtitles") or {}
-    for lang_dict in [subs, auto_captions]:
-        for lang, tracks in lang_dict.items():
-            if "en" in lang:
-                for track in tracks:
-                    if track.get("ext") == "json3":
-                        try:
-                            r = requests.get(track["url"], timeout=10)
-                            data = r.json()
-                            transcript = " ".join(
-                                e.get("utf8", "")
-                                for event in data.get("events", [])
-                                for e in event.get("segs", [])
-                            ).strip()
-                        except Exception:
-                            pass
+    all_caption_dicts = [info.get("subtitles") or {}, info.get("automatic_captions") or {}]
+    for cap_dict in all_caption_dicts:
+        for lang, tracks in cap_dict.items():
+            if not lang.startswith("en"):
+                continue
+            for track in tracks:
+                ext = track.get("ext", "")
+                cap_url = track.get("url", "")
+                if not cap_url:
+                    continue
+                try:
+                    r = requests.get(cap_url, timeout=10)
+                    if ext == "json3":
+                        data = r.json()
+                        transcript = " ".join(
+                            e.get("utf8", "")
+                            for event in data.get("events", [])
+                            for e in event.get("segs", [])
+                        ).strip()
+                    elif ext in ("vtt", "srv3", "ttml"):
+                        # Strip XML/VTT tags and grab plain text
+                        raw = r.text
+                        transcript = re.sub(r"<[^>]+>", " ", raw)
+                        transcript = re.sub(r"\s+", " ", transcript).strip()
+                    if transcript:
                         break
+                except Exception:
+                    continue
             if transcript:
                 break
         if transcript:
