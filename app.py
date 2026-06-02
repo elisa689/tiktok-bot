@@ -134,6 +134,22 @@ def scrape_tiktok(url: str) -> dict:
     }
 
 
+# ── Competitor name matching ───────────────────────────────────────────────────
+COMPETITOR_OPTIONS = [
+    "Chime", "Cash App", "MoneyLion", "Credit Karma",
+    "Self", "Rocket Money", "Dave", "Earnin"
+]
+
+def match_competitor(username: str) -> str | None:
+    """Return the matching competitor option name, or None if no match."""
+    handle = username.lstrip("@").lower().replace(" ", "").replace("_", "")
+    for option in COMPETITOR_OPTIONS:
+        if option.lower().replace(" ", "").replace("_", "") in handle or \
+           handle in option.lower().replace(" ", "").replace("_", ""):
+            return option
+    return None
+
+
 # ── Notion: add a row ─────────────────────────────────────────────────────────
 def add_to_notion(database_id: str, data: dict):
     headers = {
@@ -141,17 +157,25 @@ def add_to_notion(database_id: str, data: dict):
         "Content-Type":   "application/json",
         "Notion-Version": NOTION_VERSION,
     }
-    payload = {
-        "parent": {"database_id": database_id},
-        "properties": {
-            "Name":       {"title":     [{"text": {"content": data["title"]}}]},
-            "Username":   {"rich_text": [{"text": {"content": data["username"]}}]},
-            "TikTok URL": {"url":        data["url"]},
-            "Views":      {"number":     data["views"]},
-            "Engagement": {"rich_text": [{"text": {"content": data["engagement"]}}]},
-            "Transcript": {"rich_text": [{"text": {"content": data["transcript"][:2000]}}]},
-        },
+
+    is_competitor = database_id == NOTION_DB_MAP["competitor"]
+
+    properties = {
+        "Name":       {"title":     [{"text": {"content": data["title"]}}]},
+        "TikTok URL": {"url":        data["url"]},
+        "Views":      {"number":     data["views"]},
+        "Engagement": {"rich_text": [{"text": {"content": data["engagement"]}}]},
+        "Transcript": {"rich_text": [{"text": {"content": data["transcript"][:2000]}}]},
     }
+
+    if is_competitor:
+        matched = match_competitor(data["username"])
+        if matched:
+            properties["Competitor"] = {"select": {"name": matched}}
+    else:
+        properties["Username"] = {"rich_text": [{"text": {"content": data["username"]}}]}
+
+    payload = {"parent": {"database_id": database_id}, "properties": properties}
     resp = requests.post(
         "https://api.notion.com/v1/pages",
         headers=headers,
