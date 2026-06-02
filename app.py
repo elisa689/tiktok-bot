@@ -58,15 +58,24 @@ def scrape_tiktok(url: str) -> dict:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
 
-    # Prefer the @handle (uploader_id) over the numeric unique_id
-    username = (
-        info.get("uploader_id")
-        or info.get("channel_id")
-        or info.get("uploader")
-        or ""
+    # Try to get the @handle — prefer non-numeric values from yt-dlp,
+    # then fall back to extracting it directly from the URL
+    def is_numeric(s):
+        return s.strip("@").isdigit()
+
+    raw_username = (
+        info.get("uploader_id") or
+        info.get("uploader") or
+        info.get("channel") or
+        ""
     )
-    # Strip leading @ if present, then re-add for consistency
-    username = "@" + username.lstrip("@")
+
+    if not raw_username or is_numeric(raw_username):
+        # Extract @username from URL: tiktok.com/@username/video/...
+        url_match = re.search(r"tiktok\.com/@([\w.]+)", url)
+        raw_username = url_match.group(1) if url_match else raw_username
+
+    username = "@" + raw_username.lstrip("@")
 
     views    = info.get("view_count") or 0
     likes    = info.get("like_count") or 0
@@ -98,10 +107,14 @@ def scrape_tiktok(url: str) -> dict:
                             for e in event.get("segs", [])
                         ).strip()
                     elif ext in ("vtt", "srv3", "ttml"):
-                        # Strip XML/VTT tags and grab plain text
                         raw = r.text
-                        transcript = re.sub(r"<[^>]+>", " ", raw)
-                        transcript = re.sub(r"\s+", " ", transcript).strip()
+                        # Remove timestamp lines (e.g. 00:00:02.500 --> 00:00:05.140)
+                        raw = re.sub(r"\d{2}:\d{2}:\d{2}\.\d+ --> \d{2}:\d{2}:\d{2}\.\d+[^\n]*\n", "", raw)
+                        # Remove XML/VTT tags and headers
+                        raw = re.sub(r"<[^>]+>", " ", raw)
+                        raw = re.sub(r"^WEBVTT.*$", "", raw, flags=re.MULTILINE)
+                        # Collapse whitespace
+                        transcript = re.sub(r"\s+", " ", raw).strip()
                     if transcript:
                         break
                 except Exception:
