@@ -4,6 +4,7 @@ import json
 import hmac
 import hashlib
 import time
+import threading
 import requests
 import yt_dlp
 from flask import Flask, request, jsonify
@@ -130,6 +131,31 @@ def add_to_notion(database_id: str, data: dict):
     return resp.json()
 
 
+# ── Background worker ─────────────────────────────────────────────────────────
+def process_in_background(command_name: str, tiktok_url: str, db_id: str, user_name: str, response_url: str):
+    try:
+        data        = scrape_tiktok(tiktok_url)
+        notion_page = add_to_notion(db_id, data)
+        notion_url  = notion_page.get("url", "")
+
+        msg = {
+            "response_type": "in_channel",
+            "text": (
+                f"✅ *{user_name}* added a TikTok to *{command_name.capitalize()}*\n"
+                f">*@{data['username']}* — {data['views']:,} views\n"
+                f">{data['engagement']}\n"
+                f"><{tiktok_url}|View on TikTok>  ·  <{notion_url}|Open in Notion>"
+            ),
+        }
+    except Exception as e:
+        msg = {
+            "response_type": "ephemeral",
+            "text": f"❌ Failed to process that link: {e}",
+        }
+
+    requests.post(response_url, json=msg, timeout=10)
+
+
 # ── Generic slash command handler ─────────────────────────────────────────────
 def handle_command(command_name: str, req):
     if not verify_slack_signature(req):
@@ -144,31 +170,23 @@ def handle_command(command_name: str, req):
             "text": f"Please include a TikTok URL.  Usage: `/{command_name} https://tiktok.com/...`"
         })
 
-    tiktok_url  = url_match.group(0)
-    db_id       = NOTION_DB_MAP[command_name]
-    user_name   = req.form.get("user_name", "someone")
+    tiktok_url   = url_match.group(0)
+    db_id        = NOTION_DB_MAP[command_name]
+    user_name    = req.form.get("user_name", "someone")
+    response_url = req.form.get("response_url")
 
-    # Acknowledge immediately (Slack requires <3s response)
-    # In production, offload to a background task/queue
-    try:
-        data        = scrape_tiktok(tiktok_url)
-        notion_page = add_to_notion(db_id, data)
-        notion_url  = notion_page.get("url", "")
+    # Kick off background thread and immediately acknowledge Slack
+    t = threading.Thread(
+        target=process_in_background,
+        args=(command_name, tiktok_url, db_id, user_name, response_url),
+        daemon=True,
+    )
+    t.start()
 
-        return jsonify({
-            "response_type": "in_channel",
-            "text": (
-                f"✅ *{user_name}* added a TikTok to *{command_name.capitalize()}*\n"
-                f">*@{data['username']}* — {data['views']:,} views\n"
-                f">{data['engagement']}\n"
-                f"><{tiktok_url}|View on TikTok>  ·  <{notion_url}|Open in Notion>"
-            ),
-        })
-    except Exception as e:
-        return jsonify({
-            "response_type": "ephemeral",
-            "text": f"❌ Failed to process that link: {e}",
-        })
+    return jsonify({
+        "response_type": "ephemeral",
+        "text": f"⏳ Processing your TikTok link, hang tight...",
+    })
 
 
 # ── Routes (one per slash command) ────────────────────────────────────────────
